@@ -1,3 +1,12 @@
+This is a simple script to download automaticaly tv shows from rss feed
+
 Requirements
-===========
-sudo apt-get install php5-sqlite
+========
+sudo apt-get install php5-sqlite php5-cli transmission-daemon
+
+Configuration
+========
+add tvshow name and RSS URL in config.ini
+
+[shows]
+Futurama = "https://www.ezrss.it/search/index.php?show_name=Futurama&date=&quality=HDTV&release_group=&mode=rss"
