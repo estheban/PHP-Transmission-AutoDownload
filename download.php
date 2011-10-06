@@ -24,6 +24,7 @@
 
 // Include RPC class
 require_once( dirname( __FILE__ ) . '/lib/TransmissionRPC.class.php' );
+require_once( dirname( __FILE__ ) . '/lib/DirectoryScanResult.class.php' );
 
 if(!file_exists("config.ini"))
     die("Please create a config.ini file".PHP_EOL);
@@ -38,9 +39,38 @@ if(!array_key_exists("destinationFolder", $config['general']))
 // get Database
 $db = new PDO('sqlite:shows.db');
 // create table if not exist
-$db->query("CREATE TABLE IF NOT EXISTS shows (id INTEGER PRIMARY KEY, show_name TEXT, season INTEGER, episode INTEGER, created_at TEXT)");
+$db->query("CREATE TABLE IF NOT EXISTS shows (id INTEGER PRIMARY KEY, show_name TEXT, season INTEGER, episode INTEGER, status INTEGER, created_at TEXT)");
 
 $toDownload = array();
+
+// Get XBMC Data;
+$shows = array();
+$params = 'media@media.local:8080';
+require_once 'lib/rpc/HTTPClient.php';
+try {
+    $rpc = new XBMC_RPC_HTTPClient($params);
+} catch (XBMC_RPC_ConnectionException $e) {
+    die($e->getMessage());
+}
+
+try {
+//    $response = $rpc->JSONRPC->Introspect();
+    $response = $rpc->VideoLibrary->GetTVShows();
+    foreach($response['tvshows'] as $tvshows) {
+        $show = array();
+        $episodes = $rpc->VideoLibrary->GetEpisodes(array("tvshowid"=>$tvshows['tvshowid'], 'fields' => array('showtitle', 'season', 'episode')));
+        $episodes = $episodes['episodes'];
+        foreach($episodes as $episode) {
+            $show[$episode['season']][$episode['episode']] = $episode;
+        }
+        $shows[$tvshows['label']] = $show;
+    }
+    //$response = $rpc->VideoLibrary->GetEpisodeDetails(array("episodeid"=>1547));
+} catch (XBMC_RPC_Exception $e) {
+    die($e->getMessage());
+}
+// End XBMC
+
 
 foreach($config['shows'] as $show => $url) {
     // get RSS Feed
@@ -55,21 +85,41 @@ foreach($config['shows'] as $show => $url) {
             $tmp = explode(":", $attribute);
             $info[trim($tmp[0])] = trim($tmp[1]);
         }
-        $info['link'] = $item->link;
+
         // end Construct $info array
 
         echo "Checking if ".$info['Show Name'].": S".$info['Season']."E".$info['Episode']."... ";
 
-        $sql = "SELECT * FROM shows WHERE show_name = '".$info['Show Name']."' AND season = ".$info['Season']." AND episode = ".$info['Episode'].";";
-        $res = $db->query($sql)->fetchAll();
-        
-        if(count($res) == 0) {
-            echo "not exist in local DB, ask XBMC ...";
-            echo "not in XBMC, mark to be downloaded".PHP_EOL;
-            $toDownload[] = $info;
-        } else {
-            echo " already downloaded".PHP_EOL;
+        $already = false;
+        foreach($toDownload as $download) {
+            unset($download['link']);
+            if($info == $download)
+                $already = true;
         }
+
+        if(!$already) {
+           $info['link'] = (string) $item->link;
+
+            $sql = "SELECT * FROM shows WHERE show_name = '".$info['Show Name']."' AND season = ".$info['Season']." AND episode = ".$info['Episode'].";";
+            $res = $db->query($sql)->fetchAll();
+
+            if(count($res) == 0) {
+                echo "not exist in local DB, ask XBMC ...";
+		if($shows[$info['Show Name']][$info['Season']][$info['Episode']]) {
+                    echo "EXIST mark as downloaded".PHP_EOL;
+                    $db->query("INSERT INTO shows (show_name,season,episode,created_at) VALUES ('".$info['Show Name']."',".$info['Season'].",".$info['Episode'].",'".$info['Episode']."')");
+                } else {
+                    echo "not in XBMC, mark to be downloaded".PHP_EOL;
+                    //$toDownload[] = $info;
+                }
+            } else {
+                echo " already downloaded".PHP_EOL;
+            }
+        } else {
+            echo " already in download array".PHP_EOL;
+        }
+
+        
     }
 }
 
@@ -93,7 +143,7 @@ if ( count( $toDownload ) > 0 ) {
         $target = $config['general']['destinationFolder'] . '/' . $episode['Show Name'] .'/Season '. $episode['Season'];
         echo $target;
         if(!file_exists($target))
-            mkdir($target, "0777", true);
+            mkdir($target, 0777, true);
 
         try {
             $result = $rpc->add( (string) $episode['link'], $target );
@@ -103,10 +153,11 @@ if ( count( $toDownload ) > 0 ) {
                 print " [{$result->result}] (id=$id)\n";
                 $db->query("INSERT INTO shows (show_name,season,episode,created_at) VALUES ('".$episode['Show Name']."',".$episode['Season'].",".$episode['Episode'].",'".$episode['Episode']."')");
             } else {
-                print "warning/error from transmission\n";
+                print "warning/error from transmission [{$result->result}]\n";
             }
         } catch (Exception $e) {
             die('Caught exception: ' . $e->getMessage() . PHP_EOL);
         }
-    } 
+
+    }
 }
